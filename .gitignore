@@ -1,0 +1,9 @@
+# Ignore Google Cloud credentials
+credentials.json
+
+# Ignore the actual config file
+config.py
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
