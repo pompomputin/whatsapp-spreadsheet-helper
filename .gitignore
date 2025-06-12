@@ -3,7 +3,7 @@ credentials.json
 
 # Ignore the actual config file
 config.py
-
+config.ini
 # Ignore Python cache files
 __pycache__/
 *.pyc
