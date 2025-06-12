@@ -1,3 +1,4 @@
+# WhatsApp Helper - V1 (Robust API Error Handling)
 import tkinter as tk
 from tkinter import messagebox, Listbox, Scrollbar, Toplevel, Label, Entry, Button
 import gspread
@@ -5,9 +6,9 @@ import pyperclip
 import sys
 from datetime import datetime
 import time
+import configparser # Library to read .ini files
 
-# --- Import our new files ---
-from config import *
+# --- Import our custom files ---
 from api_client import ApiClient
 
 class WhatsAppHelperApp:
@@ -16,8 +17,17 @@ class WhatsAppHelperApp:
         self.root.title("WhatsApp Helper")
         self.root.geometry("600x550")
 
-        # Create an instance of our ApiClient
-        self.api_client = ApiClient(API_BASE_URL)
+        # --- Load configuration from config.ini ---
+        self.config = configparser.ConfigParser()
+        # Make sure the config file exists
+        try:
+            with open('config.ini') as f:
+                self.config.read_file(f)
+        except FileNotFoundError:
+            messagebox.showerror("Error", "Configuration file 'config.ini' not found. Please make sure it is in the same folder as the application.")
+            sys.exit()
+
+        self.api_client = ApiClient(self.config['API']['base_url'])
         self.api_session_name = None
 
         self.success_log, self.failed_log = [], []
@@ -29,7 +39,6 @@ class WhatsAppHelperApp:
         
         try:
             self.authenticate_and_load_sheet()
-            # --- THIS LINE IS NOW CORRECTLY ADDED BACK ---
             self.load_first_customer() 
         except Exception as e:
             messagebox.showerror("Error", f"Could not initialize app.\nError: {e}")
@@ -62,9 +71,13 @@ class WhatsAppHelperApp:
         self.phone_status_label.pack(side=tk.LEFT, padx=(5,10))
         tk.Button(phone_frame, text="Copy Phone", command=self.copy_phone_number).pack(side=tk.LEFT)
         
-        tk.Label(main_frame, text="Message 1: Greeting", font=("Helvetica", 10, "bold")).pack(anchor="w")
+        msg1_title_frame = tk.Frame(main_frame)
+        msg1_title_frame.pack(fill=tk.X, anchor=tk.W)
+        tk.Label(msg1_title_frame, text="Message 1: Greeting", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, anchor=tk.W)
+        tk.Button(msg1_title_frame, text="\u21BB Refresh", command=self.refresh_greeting).pack(side=tk.LEFT, padx=10)
+
         self.msg1_text = tk.Text(main_frame, height=2, wrap=tk.WORD, state=tk.DISABLED, bg="#f0f0f0")
-        self.msg1_text.pack(fill=tk.X, expand=True, pady=(0, 5))
+        self.msg1_text.pack(fill=tk.X, expand=True, pady=(2, 5))
         tk.Button(main_frame, text="Copy Message 1", command=self.copy_message_1).pack(fill=tk.X, pady=(0, 10))
 
         tk.Label(main_frame, text="Message 2: Follow Up", font=("Helvetica", 10, "bold")).pack(anchor="w")
@@ -80,7 +93,10 @@ class WhatsAppHelperApp:
         self.invalid_button.pack(fill=tk.X, pady=(5,0))
     
     def authenticate_and_load_sheet(self):
-        self.worksheet = gspread.service_account(filename="credentials.json").open(GOOGLE_SHEET_NAME).worksheet(WORKSHEET_NAME)
+        gc = gspread.service_account(filename="credentials.json")
+        sheet_name = self.config['DEFAULT']['google_sheet_name']
+        worksheet_name = self.config['DEFAULT']['worksheet_name']
+        self.worksheet = gc.open(sheet_name).worksheet(worksheet_name)
         print("Successfully connected to Google Sheets.")
     
     def get_time_based_greeting(self):
@@ -90,25 +106,32 @@ class WhatsAppHelperApp:
         elif 15 <= h < 18: return "sore"
         else: return "malam"
 
+    def refresh_greeting(self):
+        if not self.current_customer_data: return
+        name = self.current_customer_data.get(self.config['COLUMNS']['name'], "")
+        greeting_word = self.get_time_based_greeting()
+        msg1 = f"Selamat {greeting_word} ka {name}"
+        self.update_text_widget(self.msg1_text, msg1)
+        print("Greeting refreshed.")
+
     def load_and_validate_next_customer(self):
         if not self.api_client.token:
             messagebox.showwarning("Not Logged In", "Please login via the API menu to start processing.")
             return
 
         self.customer_info_label.config(text="Searching for next valid customer...")
-        self.next_button.config(state=tk.DISABLED)
-        self.invalid_button.config(state=tk.DISABLED)
+        self.next_button.config(state=tk.DISABLED); self.invalid_button.config(state=tk.DISABLED)
         self.root.update_idletasks()
 
         all_records = self.worksheet.get_all_records()
-        start_index = self.current_customer_data.get('row_index', 1) -1 
+        start_index = self.current_customer_data.get('row_index', 1) - 1 
 
         while True:
             found_customer = None
             for i in range(start_index, len(all_records)):
                 record = all_records[i]
-                status = str(record.get(STATUS_COLUMN, '')).strip()
-                if status not in [STATUS_DONE_TEXT, STATUS_INVALID_TEXT]:
+                status = str(record.get(self.config['COLUMNS']['status'], '')).strip()
+                if status not in [self.config['DEFAULT']['status_done_text'], self.config['DEFAULT']['status_invalid_text']]:
                     found_customer = record
                     found_customer['row_index'] = i + 2 
                     start_index = i + 1 
@@ -118,37 +141,67 @@ class WhatsAppHelperApp:
                 self._display_no_more_customers(); return
 
             self.current_customer_data = found_customer
-            phone_to_check = self.current_customer_data.get(PHONE_COLUMN, "")
-            is_valid, err_msg, is_auth_err = self.api_client.is_phone_registered(self.api_session_name, phone_to_check, DEFAULT_COUNTRY_CODE)
+            phone_to_check = self.current_customer_data.get(self.config['COLUMNS']['phone'], "")
             
+            # Call the API and check for all possible outcomes
+            is_valid, err_msg, is_auth_err = self.api_client.is_phone_registered(
+                self.api_session_name, 
+                phone_to_check, 
+                self.config['API']['country_code']
+            )
+            
+            # 1. Handle Authentication/Session Errors (Token expired, etc.)
             if is_auth_err:
-                self.handle_auth_failure(err_msg); return
-            
+                self.handle_auth_failure(err_msg)
+                return # Stop the entire process
+
+            # 2. Handle General API Connection Errors (Heroku rebooting, server down)
+            if is_valid is None and not is_auth_err:
+                messagebox.showerror(
+                    "API Connection Error",
+                    f"Could not check phone number. The API might be down or rebooting.\n\n"
+                    f"Error: {err_msg}\n\n"
+                    "The process will stop. Please check the API and log in again to resume."
+                )
+                self.customer_info_label.config(text="API Error. Please re-login to continue.")
+                self.update_text_widget(self.phone_text, "")
+                self.update_text_widget(self.msg1_text, "")
+                self.update_text_widget(self.msg2_text, "")
+                return # Stop the entire process
+
+            # 3. Handle a successfully checked, valid number
             if is_valid:
                 self.phone_status_label.config(text="Registered", fg="green")
-                self._display_customer_data(); return
-            else:
+                self._display_customer_data()
+                return # Stop and wait for user to press a button
+            
+            # 4. Handle a successfully checked, but invalid number
+            else: # is_valid is False
                 print(f"Number {phone_to_check} is invalid, auto-skipping.")
                 self.phone_status_label.config(text="Invalid, skipping...", fg="red")
-                self._update_status(STATUS_INVALID_TEXT)
+                self._update_status(self.config['DEFAULT']['status_invalid_text'])
+                # The 'while True' loop will automatically continue to the next customer
     
     def load_first_customer(self):
         all_records = self.worksheet.get_all_records()
         for i, record in enumerate(all_records):
-            status = str(record.get(STATUS_COLUMN, '')).strip()
-            if status not in [STATUS_DONE_TEXT, STATUS_INVALID_TEXT]:
+            status = str(record.get(self.config['COLUMNS']['status'], '')).strip()
+            if status not in [self.config['DEFAULT']['status_done_text'], self.config['DEFAULT']['status_invalid_text']]:
                 self.current_customer_data = record
                 self.current_customer_data['row_index'] = i + 2
                 self._display_customer_data(enable_buttons=False)
                 break
     
     def _display_customer_data(self, enable_buttons=True):
-        name = self.current_customer_data.get(NAME_COLUMN, ""); phone = self.current_customer_data.get(PHONE_COLUMN, "")
-        user_id = self.current_customer_data.get(ID_COLUMN, ""); last_login = self.current_customer_data.get(LAST_LOGIN_COLUMN, "")
+        name = self.current_customer_data.get(self.config['COLUMNS']['name'], "")
+        phone = self.current_customer_data.get(self.config['COLUMNS']['phone'], "")
+        user_id = self.current_customer_data.get(self.config['COLUMNS']['id'], "")
+        last_login = self.current_customer_data.get(self.config['COLUMNS']['last_login'], "")
         self.customer_info_label.config(text=f"Contact Name: {name}")
         self.update_text_widget(self.phone_text, phone)
         greeting_word = self.get_time_based_greeting()
-        msg1 = f"Selamat {greeting_word} ka {name}"; msg2 = (f"ingin konfirmasi mengenai ID kaka *{user_id}* \n"
+        msg1 = f"Selamat {greeting_word} ka {name}"
+        msg2 = (f"ingin konfirmasi mengenai ID kaka *{user_id}* \n"
                  f"sejak *{last_login}*\nDi situs Amor77\n"
                  f"belum dimainkan ya ka ? apakah ada kendala ?")
         self.update_text_widget(self.msg1_text, msg1); self.update_text_widget(self.msg2_text, msg2)
@@ -165,30 +218,32 @@ class WhatsAppHelperApp:
     def _update_status(self, status_text):
         if not self.current_customer_data: return
         try:
-            row, col = self.current_customer_data['row_index'], self.worksheet.find(STATUS_COLUMN).col
+            status_col_name = self.config['COLUMNS']['status']
+            row, col = self.current_customer_data['row_index'], self.worksheet.find(status_col_name).col
             self.worksheet.update_cell(row, col, status_text)
             print(f"Updated row {row} status to '{status_text}'.")
-            name = self.current_customer_data.get(NAME_COLUMN, 'N/A'); phone = self.current_customer_data.get(PHONE_COLUMN, 'N/A')
-            username = self.current_customer_data.get(ID_COLUMN, 'N/A')
+            name = self.current_customer_data.get(self.config['COLUMNS']['name'], 'N/A')
+            phone = self.current_customer_data.get(self.config['COLUMNS']['phone'], 'N/A')
+            username = self.current_customer_data.get(self.config['COLUMNS']['id'], 'N/A')
             log_entry = f"{name} ({phone}) - {username}"
-            if status_text == STATUS_DONE_TEXT: self.success_log.append(log_entry)
-            elif status_text == STATUS_INVALID_TEXT: self.failed_log.append(log_entry)
-            self.update_log_window("Success" if status_text == STATUS_DONE_TEXT else "Failed")
+            if status_text == self.config['DEFAULT']['status_done_text']: self.success_log.append(log_entry)
+            elif status_text == self.config['DEFAULT']['status_invalid_text']: self.failed_log.append(log_entry)
+            self.update_log_window("Success" if status_text == self.config['DEFAULT']['status_done_text'] else "Failed")
         except Exception as e:
             messagebox.showerror("Error", f"Could not update Google Sheet.\nError: {e}")
             
     def mark_done_and_next(self):
-        self._update_status(STATUS_DONE_TEXT); self.load_and_validate_next_customer()
+        self._update_status(self.config['DEFAULT']['status_done_text']); self.load_and_validate_next_customer()
 
     def mark_invalid_and_next(self):
-        self._update_status(STATUS_INVALID_TEXT); self.load_and_validate_next_customer()
+        self._update_status(self.config['DEFAULT']['status_invalid_text']); self.load_and_validate_next_customer()
 
     def open_login_window(self):
         login_window = Toplevel(self.root); login_window.title("API Gateway Login"); login_window.geometry("300x200")
         login_window.transient(self.root); login_window.grab_set()
-        Label(login_window, text="Username:").pack(pady=(10,0)); user_entry = Entry(login_window, width=30); user_entry.pack(); user_entry.insert(0, DEFAULT_API_USERNAME)
-        Label(login_window, text="Password:").pack(pady=(5,0)); pass_entry = Entry(login_window, show="*", width=30); pass_entry.pack(); pass_entry.insert(0, DEFAULT_API_PASSWORD)
-        Label(login_window, text="Session Name:").pack(pady=(5,0)); session_entry = Entry(login_window, width=30); session_entry.pack(); session_entry.insert(0, self.api_session_name or DEFAULT_API_SESSION)
+        Label(login_window, text="Username:").pack(pady=(10,0)); user_entry = Entry(login_window, width=30); user_entry.pack(); user_entry.insert(0, self.config['API']['username'])
+        Label(login_window, text="Password:").pack(pady=(5,0)); pass_entry = Entry(login_window, show="*", width=30); pass_entry.pack(); pass_entry.insert(0, self.config['API']['password'])
+        Label(login_window, text="Session Name:").pack(pady=(5,0)); session_entry = Entry(login_window, width=30); session_entry.pack(); session_entry.insert(0, self.api_session_name or self.config['API']['session'])
         
         def perform_login():
             user, pwd, session = user_entry.get(), pass_entry.get(), session_entry.get()
@@ -211,10 +266,11 @@ class WhatsAppHelperApp:
         self.next_button.config(state=tk.DISABLED); self.invalid_button.config(state=tk.DISABLED)
         messagebox.showerror("Session Error", f"{error_message}\nPlease log in again.")
         self.open_login_window()
-
+    
     def copy_phone_number(self): pyperclip.copy(self.phone_text.get("1.0", tk.END).strip())
     def copy_message_1(self): pyperclip.copy(self.msg1_text.get("1.0", tk.END).strip())
     def copy_message_2(self): pyperclip.copy(self.msg2_text.get("1.0", tk.END).strip())
+    
     def show_log_window(self, log_type):
         if self.log_windows.get(log_type) and self.log_windows[log_type].winfo_exists(): self.log_windows[log_type].lift(); return
         log_window = Toplevel(self.root); log_window.title(f"{log_type} Log"); log_window.geometry("500x500")
@@ -227,18 +283,21 @@ class WhatsAppHelperApp:
         listbox.config(yscrollcommand=scrollbar.set)
         self.log_windows[log_type] = log_window
         self.update_log_window(log_type)
+
     def copy_selected_log_username(self, listbox):
         indices = listbox.curselection()
         if not indices: messagebox.showwarning("No Selection", "Please click on an item in the log to select it first."); return
         entry = listbox.get(indices[0])
         try: username = entry.split(' - ')[-1].strip(); pyperclip.copy(username); print(f"Copied: {username}")
         except IndexError: print(f"Could not parse: {entry}")
+
     def copy_all_log_usernames(self, listbox):
         entries = listbox.get(0, tk.END)
         if not entries: messagebox.showwarning("Empty Log", "The log is empty."); return
         usernames = [e.split(' - ')[-1].strip() for e in entries if ' - ' in e]
         if usernames: pyperclip.copy("\n".join(usernames)); messagebox.showinfo("Copied!", f"{len(usernames)} usernames copied.")
         else: messagebox.showwarning("No Usernames", "Could not find any usernames to copy.")
+
     def update_log_window(self, log_type):
         if not self.log_windows.get(log_type) or not self.log_windows[log_type].winfo_exists(): return
         window = self.log_windows[log_type]
@@ -246,14 +305,15 @@ class WhatsAppHelperApp:
         log_data = self.success_log if log_type == "Success" else self.failed_log
         listbox.delete(0, tk.END)
         for item in log_data: listbox.insert(tk.END, item)
+
     def update_text_widget(self, widget, text):
         widget.config(state=tk.NORMAL); widget.delete("1.0", tk.END); widget.insert("1.0", str(text)); widget.config(state=tk.DISABLED)
 
 if __name__ == "__main__":
     try:
-        import gspread, pyperclip, requests
+        import gspread, pyperclip, requests, configparser
     except ImportError as e:
-        module = str(e).split("'")[1]
+        module = str(e).split("'")[-2]
         print(f"Required library '{module}' not found.")
         print(f"Please install it by running: pip install {module}")
         sys.exit()
