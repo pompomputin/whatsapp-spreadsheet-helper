@@ -1,4 +1,4 @@
-# WhatsApp Helper - V1 (Robust API Error Handling)
+# WhatsApp Helper - V5.1 (UI Layout Adjustment)
 import tkinter as tk
 from tkinter import messagebox, Listbox, Scrollbar, Toplevel, Label, Entry, Button
 import gspread
@@ -6,43 +6,67 @@ import pyperclip
 import sys
 from datetime import datetime
 import time
-import configparser # Library to read .ini files
+import configparser
+import keyboard
 
-# --- Import our custom files ---
 from api_client import ApiClient
 
 class WhatsAppHelperApp:
     def __init__(self, root):
         self.root = root
         self.root.title("WhatsApp Helper")
-        self.root.geometry("600x550")
+        self.root.geometry("600x650")
 
-        # --- Load configuration from config.ini ---
         self.config = configparser.ConfigParser()
-        # Make sure the config file exists
         try:
             with open('config.ini') as f:
                 self.config.read_file(f)
         except FileNotFoundError:
-            messagebox.showerror("Error", "Configuration file 'config.ini' not found. Please make sure it is in the same folder as the application.")
+            messagebox.showerror("Error", "Configuration file 'config.ini' not found.")
             sys.exit()
 
         self.api_client = ApiClient(self.config['API']['base_url'])
         self.api_session_name = None
 
         self.success_log, self.failed_log = [], []
-        self.log_windows = {} 
+        self.log_windows = {}
         self.worksheet = None
         self.current_customer_data = {}
+        self.previous_customer_data = {}
 
         self.setup_gui()
-        
+        self.setup_global_macros()
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
         try:
             self.authenticate_and_load_sheet()
-            self.load_first_customer() 
+            self.load_first_customer()
         except Exception as e:
             messagebox.showerror("Error", f"Could not initialize app.\nError: {e}")
-            sys.exit()
+            self.on_closing()
+
+    def setup_global_macros(self):
+        try:
+            if self.config.has_section('MACROS'):
+                key1 = self.config.get('MACROS', 'copy_message_1_key', fallback=None)
+                if key1:
+                    keyboard.add_hotkey(key1.lower(), self.copy_message_1)
+                    print(f"Global hotkey '{key1}' bound to Copy Message 1.")
+
+                key2 = self.config.get('MACROS', 'copy_message_2_key', fallback=None)
+                if key2:
+                    keyboard.add_hotkey(key2.lower(), self.copy_message_2)
+                    print(f"Global hotkey '{key2}' bound to Copy Message 2.")
+        except Exception as e:
+            messagebox.showerror("Macro Error",
+                f"Could not set up global macros: {e}\n\nPlease try running as administrator.")
+            print(f"Could not set up global macros: {e}")
+
+    def on_closing(self):
+        print("Closing application and removing hotkeys...")
+        keyboard.remove_all_hotkeys()
+        self.root.destroy()
 
     def setup_gui(self):
         menubar = tk.Menu(self.root)
@@ -57,48 +81,64 @@ class WhatsAppHelperApp:
 
         main_frame = tk.Frame(self.root, padx=10, pady=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
-        top_info_frame = tk.Frame(main_frame)
-        top_info_frame.pack(fill=tk.X, pady=(0, 10))
-        self.customer_info_label = tk.Label(top_info_frame, text="Please log in via the API menu to begin.", font=("Helvetica", 12, "bold"))
-        self.customer_info_label.pack()
 
-        phone_frame = tk.Frame(main_frame)
-        phone_frame.pack(fill=tk.X, pady=(0, 15))
-        tk.Label(phone_frame, text="Phone:", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
-        self.phone_text = tk.Text(phone_frame, height=1, width=25, state=tk.DISABLED, bg="#f0f0f0")
-        self.phone_text.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
-        self.phone_status_label = tk.Label(phone_frame, text="", font=("Helvetica", 10, "bold"), width=15)
-        self.phone_status_label.pack(side=tk.LEFT, padx=(5,10))
-        tk.Button(phone_frame, text="Copy Phone", command=self.copy_phone_number).pack(side=tk.LEFT)
+        details_frame = tk.LabelFrame(main_frame, text="Customer Details", font=("Helvetica", 10, "bold"), padx=10, pady=10)
+        details_frame.pack(fill=tk.X, pady=(0, 15), anchor="n")
+
+        details_frame.grid_columnconfigure(1, weight=1)
+
+        # Row 0: Contact Name
+        tk.Label(details_frame, text="Contact Name:", font=("Helvetica", 11)).grid(row=0, column=0, sticky="w", padx=5, pady=3)
+        self.name_val_label = tk.Label(details_frame, text="-", font=("Helvetica", 12, "bold"))
+        self.name_val_label.grid(row=0, column=1, columnspan=2, sticky="w", padx=5, pady=3)
+
+        # Row 1: Phone Number
+        tk.Label(details_frame, text="Phone:", font=("Helvetica", 11)).grid(row=1, column=0, sticky="w", padx=5, pady=3)
+        self.phone_val_label = tk.Label(details_frame, text="-", font=("Helvetica", 12, "bold"))
+        self.phone_val_label.grid(row=1, column=1, sticky="w", padx=5, pady=3)
+        tk.Button(details_frame, text="Copy Phone", command=self.copy_phone_number).grid(row=1, column=3, sticky="e", padx=5)
+
+        # Row 2: Username
+        tk.Label(details_frame, text="Username:", font=("Helvetica", 11)).grid(row=2, column=0, sticky="w", padx=5, pady=3)
+        self.username_val_label = tk.Label(details_frame, text="-", font=("Helvetica", 12, "bold"))
+        self.username_val_label.grid(row=2, column=1, sticky="w", padx=5, pady=3)
+        tk.Button(details_frame, text="Copy Username", command=self.copy_username).grid(row=2, column=3, sticky="e", padx=5)
         
+        # --- MODIFIED: Moved the phone_status_label to the top right ---
+        self.phone_status_label = tk.Label(details_frame, text="", font=("Helvetica", 10, "bold"), width=12)
+        self.phone_status_label.grid(row=0, column=3, sticky="e", padx=5)
+
         msg1_title_frame = tk.Frame(main_frame)
         msg1_title_frame.pack(fill=tk.X, anchor=tk.W)
         tk.Label(msg1_title_frame, text="Message 1: Greeting", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, anchor=tk.W)
         tk.Button(msg1_title_frame, text="\u21BB Refresh", command=self.refresh_greeting).pack(side=tk.LEFT, padx=10)
 
-        self.msg1_text = tk.Text(main_frame, height=2, wrap=tk.WORD, state=tk.DISABLED, bg="#f0f0f0")
+        self.msg1_text = tk.Text(main_frame, height=3, wrap=tk.WORD)
         self.msg1_text.pack(fill=tk.X, expand=True, pady=(2, 5))
         tk.Button(main_frame, text="Copy Message 1", command=self.copy_message_1).pack(fill=tk.X, pady=(0, 10))
 
         tk.Label(main_frame, text="Message 2: Follow Up", font=("Helvetica", 10, "bold")).pack(anchor="w")
-        self.msg2_text = tk.Text(main_frame, height=5, wrap=tk.WORD, state=tk.DISABLED, bg="#f0f0f0")
+        self.msg2_text = tk.Text(main_frame, height=5, wrap=tk.WORD)
         self.msg2_text.pack(fill=tk.X, expand=True, pady=(0, 5))
         tk.Button(main_frame, text="Copy Message 2", command=self.copy_message_2).pack(fill=tk.X, pady=(0, 10))
 
         action_frame = tk.Frame(main_frame)
-        action_frame.pack(fill=tk.X, pady=10)
+        action_frame.pack(fill=tk.X, pady=10, side=tk.BOTTOM)
+
+        self.previous_button = tk.Button(action_frame, text="< Previous Customer", command=self.load_previous_customer, bg="#ff9800", fg="white", font=("Helvetica", 10, "bold"), state=tk.DISABLED)
+        self.previous_button.pack(fill=tk.X, pady=(5,0))
         self.next_button = tk.Button(action_frame, text="Mark as Done & Get Next Customer", command=self.mark_done_and_next, bg="#4CAF50", fg="white", font=("Helvetica", 10, "bold"), state=tk.DISABLED)
         self.next_button.pack(fill=tk.X, pady=(5,0))
         self.invalid_button = tk.Button(action_frame, text="Mark as Invalid & Get Next", command=self.mark_invalid_and_next, bg="#f44336", fg="white", font=("Helvetica", 10, "bold"), state=tk.DISABLED)
         self.invalid_button.pack(fill=tk.X, pady=(5,0))
-    
+
     def authenticate_and_load_sheet(self):
         gc = gspread.service_account(filename="credentials.json")
         sheet_name = self.config['DEFAULT']['google_sheet_name']
         worksheet_name = self.config['DEFAULT']['worksheet_name']
         self.worksheet = gc.open(sheet_name).worksheet(worksheet_name)
         print("Successfully connected to Google Sheets.")
-    
+
     def get_time_based_greeting(self):
         h = datetime.now().hour
         if 4 <= h < 10: return "pagi"
@@ -106,7 +146,7 @@ class WhatsAppHelperApp:
         elif 15 <= h < 18: return "sore"
         else: return "malam"
 
-    def refresh_greeting(self):
+    def refresh_greeting(self, event=None):
         if not self.current_customer_data: return
         name = self.current_customer_data.get(self.config['COLUMNS']['name'], "")
         greeting_word = self.get_time_based_greeting()
@@ -119,70 +159,69 @@ class WhatsAppHelperApp:
             messagebox.showwarning("Not Logged In", "Please login via the API menu to start processing.")
             return
 
-        self.customer_info_label.config(text="Searching for next valid customer...")
+        self.name_val_label.config(text="Searching...")
+        self.phone_val_label.config(text="-")
+        self.username_val_label.config(text="-")
         self.next_button.config(state=tk.DISABLED); self.invalid_button.config(state=tk.DISABLED)
         self.root.update_idletasks()
 
         all_records = self.worksheet.get_all_records()
-        start_index = self.current_customer_data.get('row_index', 1) - 1 
+        start_index = self.current_customer_data.get('row_index', 1) - 1
 
         while True:
+            if self.current_customer_data:
+                self.previous_customer_data = self.current_customer_data.copy()
+
             found_customer = None
             for i in range(start_index, len(all_records)):
                 record = all_records[i]
                 status = str(record.get(self.config['COLUMNS']['status'], '')).strip()
                 if status not in [self.config['DEFAULT']['status_done_text'], self.config['DEFAULT']['status_invalid_text']]:
                     found_customer = record
-                    found_customer['row_index'] = i + 2 
-                    start_index = i + 1 
+                    found_customer['row_index'] = i + 2
+                    start_index = i + 1
                     break
-            
+
             if not found_customer:
                 self._display_no_more_customers(); return
 
             self.current_customer_data = found_customer
             phone_to_check = self.current_customer_data.get(self.config['COLUMNS']['phone'], "")
-            
-            # Call the API and check for all possible outcomes
-            is_valid, err_msg, is_auth_err = self.api_client.is_phone_registered(
-                self.api_session_name, 
-                phone_to_check, 
-                self.config['API']['country_code']
-            )
-            
-            # 1. Handle Authentication/Session Errors (Token expired, etc.)
+
+            is_valid, err_msg, is_auth_err = self.api_client.is_phone_registered(self.api_session_name, phone_to_check, self.config['API']['country_code'])
+
             if is_auth_err:
-                self.handle_auth_failure(err_msg)
-                return # Stop the entire process
+                self.handle_auth_failure(err_msg); return
 
-            # 2. Handle General API Connection Errors (Heroku rebooting, server down)
             if is_valid is None and not is_auth_err:
-                messagebox.showerror(
-                    "API Connection Error",
-                    f"Could not check phone number. The API might be down or rebooting.\n\n"
-                    f"Error: {err_msg}\n\n"
-                    "The process will stop. Please check the API and log in again to resume."
-                )
-                self.customer_info_label.config(text="API Error. Please re-login to continue.")
-                self.update_text_widget(self.phone_text, "")
-                self.update_text_widget(self.msg1_text, "")
-                self.update_text_widget(self.msg2_text, "")
-                return # Stop the entire process
+                messagebox.showerror("API Connection Error", f"Could not check phone number: {err_msg}\n\nThe process will stop.")
+                self.name_val_label.config(text="API Error")
+                self.phone_status_label.config(text="Re-login")
+                self.clear_customer_info()
+                return
 
-            # 3. Handle a successfully checked, valid number
             if is_valid:
                 self.phone_status_label.config(text="Registered", fg="green")
                 self._display_customer_data()
-                return # Stop and wait for user to press a button
-            
-            # 4. Handle a successfully checked, but invalid number
-            else: # is_valid is False
+                return
+            else:
                 print(f"Number {phone_to_check} is invalid, auto-skipping.")
-                self.phone_status_label.config(text="Invalid, skipping...", fg="red")
                 self._update_status(self.config['DEFAULT']['status_invalid_text'])
-                # The 'while True' loop will automatically continue to the next customer
-    
+
+    def load_previous_customer(self):
+        if not self.previous_customer_data:
+            messagebox.showinfo("Info", "No previous customer in history.")
+            return
+
+        print("Loading previous customer...")
+        self.current_customer_data = self.previous_customer_data
+        self.previous_customer_data = {}
+
+        self._display_customer_data()
+        self.phone_status_label.config(text="Registered", fg="green")
+
     def load_first_customer(self):
+        self.previous_customer_data = {}
         all_records = self.worksheet.get_all_records()
         for i, record in enumerate(all_records):
             status = str(record.get(self.config['COLUMNS']['status'], '')).strip()
@@ -190,30 +229,49 @@ class WhatsAppHelperApp:
                 self.current_customer_data = record
                 self.current_customer_data['row_index'] = i + 2
                 self._display_customer_data(enable_buttons=False)
+                self.phone_status_label.config(text="Login to check", fg="blue")
                 break
-    
+
     def _display_customer_data(self, enable_buttons=True):
         name = self.current_customer_data.get(self.config['COLUMNS']['name'], "")
         phone = self.current_customer_data.get(self.config['COLUMNS']['phone'], "")
         user_id = self.current_customer_data.get(self.config['COLUMNS']['id'], "")
         last_login = self.current_customer_data.get(self.config['COLUMNS']['last_login'], "")
-        self.customer_info_label.config(text=f"Contact Name: {name}")
-        self.update_text_widget(self.phone_text, phone)
+
+        self.name_val_label.config(text=name)
+        self.phone_val_label.config(text=phone)
+        self.username_val_label.config(text=user_id)
+
         greeting_word = self.get_time_based_greeting()
         msg1 = f"Selamat {greeting_word} ka {name}"
         msg2 = (f"ingin konfirmasi mengenai ID kaka *{user_id}* \n"
                  f"sejak *{last_login}*\nDi situs Amor77\n"
                  f"belum dimainkan ya ka ? apakah ada kendala ?")
         self.update_text_widget(self.msg1_text, msg1); self.update_text_widget(self.msg2_text, msg2)
+
         if enable_buttons and self.api_client.token:
             self.next_button.config(state=tk.NORMAL); self.invalid_button.config(state=tk.NORMAL)
 
+        if self.previous_customer_data:
+            self.previous_button.config(state=tk.NORMAL)
+        else:
+            self.previous_button.config(state=tk.DISABLED)
+
+    def clear_customer_info(self):
+        """Clears all customer data from the GUI."""
+        self.name_val_label.config(text="-")
+        self.phone_val_label.config(text="-")
+        self.username_val_label.config(text="-")
+        self.update_text_widget(self.msg1_text, "")
+        self.update_text_widget(self.msg2_text, "")
+
     def _display_no_more_customers(self):
-        self.phone_status_label.config(text=""); self.update_text_widget(self.phone_text, "")
-        self.update_text_widget(self.msg1_text, ""); self.update_text_widget(self.msg2_text, "")
-        self.customer_info_label.config(text="All Done!")
+        self.clear_customer_info()
+        self.name_val_label.config(text="All Done!")
+        self.phone_status_label.config(text="")
         messagebox.showinfo("Complete", "You have processed all customers in the sheet!")
         self.next_button.config(state=tk.DISABLED); self.invalid_button.config(state=tk.DISABLED)
+        self.previous_button.config(state=tk.DISABLED)
 
     def _update_status(self, status_text):
         if not self.current_customer_data: return
@@ -231,7 +289,7 @@ class WhatsAppHelperApp:
             self.update_log_window("Success" if status_text == self.config['DEFAULT']['status_done_text'] else "Failed")
         except Exception as e:
             messagebox.showerror("Error", f"Could not update Google Sheet.\nError: {e}")
-            
+
     def mark_done_and_next(self):
         self._update_status(self.config['DEFAULT']['status_done_text']); self.load_and_validate_next_customer()
 
@@ -244,15 +302,14 @@ class WhatsAppHelperApp:
         Label(login_window, text="Username:").pack(pady=(10,0)); user_entry = Entry(login_window, width=30); user_entry.pack(); user_entry.insert(0, self.config['API']['username'])
         Label(login_window, text="Password:").pack(pady=(5,0)); pass_entry = Entry(login_window, show="*", width=30); pass_entry.pack(); pass_entry.insert(0, self.config['API']['password'])
         Label(login_window, text="Session Name:").pack(pady=(5,0)); session_entry = Entry(login_window, width=30); session_entry.pack(); session_entry.insert(0, self.api_session_name or self.config['API']['session'])
-        
+
         def perform_login():
             user, pwd, session = user_entry.get(), pass_entry.get(), session_entry.get()
             if not all([user, pwd, session]): messagebox.showerror("Error", "All fields are required.", parent=login_window); return
-            
+
             result = self.api_client.login(user, pwd)
             if self.api_client.token:
                 self.api_session_name = session
-                self.next_button.config(state=tk.NORMAL); self.invalid_button.config(state=tk.NORMAL)
                 messagebox.showinfo("Success", "Successfully logged in. You may now begin.", parent=login_window)
                 login_window.destroy()
                 self.load_and_validate_next_customer()
@@ -266,11 +323,25 @@ class WhatsAppHelperApp:
         self.next_button.config(state=tk.DISABLED); self.invalid_button.config(state=tk.DISABLED)
         messagebox.showerror("Session Error", f"{error_message}\nPlease log in again.")
         self.open_login_window()
-    
-    def copy_phone_number(self): pyperclip.copy(self.phone_text.get("1.0", tk.END).strip())
-    def copy_message_1(self): pyperclip.copy(self.msg1_text.get("1.0", tk.END).strip())
-    def copy_message_2(self): pyperclip.copy(self.msg2_text.get("1.0", tk.END).strip())
-    
+
+    def copy_phone_number(self, event=None):
+        phone = self.phone_val_label.cget("text")
+        pyperclip.copy(phone)
+        print(f"Phone number '{phone}' copied to clipboard.")
+
+    def copy_username(self, event=None):
+        username = self.username_val_label.cget("text")
+        pyperclip.copy(username)
+        print(f"Username '{username}' copied to clipboard.")
+
+    def copy_message_1(self, event=None):
+        pyperclip.copy(self.msg1_text.get("1.0", tk.END).strip())
+        print("Message 1 copied to clipboard.")
+
+    def copy_message_2(self, event=None):
+        pyperclip.copy(self.msg2_text.get("1.0", tk.END).strip())
+        print("Message 2 copied to clipboard.")
+
     def show_log_window(self, log_type):
         if self.log_windows.get(log_type) and self.log_windows[log_type].winfo_exists(): self.log_windows[log_type].lift(); return
         log_window = Toplevel(self.root); log_window.title(f"{log_type} Log"); log_window.geometry("500x500")
@@ -311,7 +382,7 @@ class WhatsAppHelperApp:
 
 if __name__ == "__main__":
     try:
-        import gspread, pyperclip, requests, configparser
+        import gspread, pyperclip, requests, configparser, keyboard
     except ImportError as e:
         module = str(e).split("'")[-2]
         print(f"Required library '{module}' not found.")
