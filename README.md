@@ -2,7 +2,7 @@
 
 A robust desktop application built with Python and Tkinter to streamline customer messaging workflows. This tool connects a Google Sheet of contacts to a WhatsApp API gateway, automating number validation and message template generation.
 
-![Application Screenshot](https://i.imgur.com/uO7z1fF.png)
+![Application Screenshot](https://i.imgur.com/b2jB0VK.png)
 
 ---
 
